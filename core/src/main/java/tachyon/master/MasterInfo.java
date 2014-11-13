@@ -311,10 +311,13 @@ public class MasterInfo extends ImageWriter {
       MasterWorkerInfo tWorkerInfo = getWorkerInfo(workerId);
       tWorkerInfo.updateLastUpdatedTimeMs();
     }
-
+    //don't need to synchronize here.
+    // inode in the next line is stack local and *not* shared netween Threads.
     synchronized (mRootLock) {
+      //mFileIdToInodes will be replaced with concurrent hash map.
+      // the GET is always pass-by-value inode is a copy!.
       Inode inode = mFileIdToInodes.get(fileId);
-
+      //still working of a copy
       if (inode == null) {
         throw new FileNotFoundException("File " + fileId + " does not exist.");
       }
@@ -338,25 +341,33 @@ public class MasterInfo extends ImageWriter {
       if (!tFile.hasCheckpointed()) {
         tFile.setUfsPath(checkpointPath.toString());
         needLog = true;
-
+        //Inode is still a copy at this stage.
+        //Even with the modified ufsPath, mFileIdToDependency has not reflected this change yet!
+        //No need to sync here !
         synchronized (mFileIdToDependency) {
           int depId = tFile.getDependencyId();
           if (depId != -1) {
+            //now we need concurrent access to mFileIdToDependency ,
+            // this will be replaced with conc hash map and
+            //synchronized (mFileIdToDependency) can go
             Dependency dep = mFileIdToDependency.get(depId);
             dep.childCheckpointed(tFile.getId());
             if (dep.hasCheckpointed()) {
+              //These two can be replaced with a conc hash map
               mUncheckpointedDependencies.remove(dep.mId);
               mPriorityDependencies.remove(dep.mId);
             }
           }
         }
       }
+      //now add the ids and dep id back to map, but let addFile do the sync
       addFile(fileId, tFile.getDependencyId());
       tFile.setComplete();
 
       if (needLog) {
         tFile.setLastModificationTimeMs(opTimeMs);
       }
+      //tFile is never used or put back into mFileIdToInodes!
       return new Pair<Boolean, Boolean>(true, needLog);
     }
   }
@@ -852,6 +863,8 @@ public class MasterInfo extends ImageWriter {
    * @param fileId The file to examine
    */
   private void addFile(int fileId, int dependencyId) {
+    //mFileIdToDependency is not being modified or written to,
+    // no sync needed here - or sync on the hashset mLostFiles and mBeingRecomputedFiles?
     synchronized (mFileIdToDependency) {
       if (mLostFiles.contains(fileId)) {
         mLostFiles.remove(fileId);
